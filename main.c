@@ -31,6 +31,7 @@ typedef struct
 {
 	int begin;
 	int end;
+	int core_id;
 }thrd_arg_t;
 
 typedef struct
@@ -43,6 +44,8 @@ int *num_arr = NULL; /* Array with numbers for sorting */
 mtx_t mtx;
 
 void* parallel_max_finding(void *arg); /* Prototype of the thread function */
+
+/* for c11 threads.h (most of them are not used currently) */
 void m_mtx_init(mtx_t *__mutex, int __type);
 void m_mtx_lock(mtx_t *__mutex);
 void m_mtx_unlock(mtx_t *__mutex);
@@ -52,6 +55,21 @@ void m_thrd_join(thrd_t __thr, int *__res);
 
 int main()
 {
+	////////// CORES ////////////////
+	const pthread_t pid = pthread_self();
+	cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    int core_cnt = 0;
+    CPU_SET(core_cnt, &cpuset);
+    /* Attach main thread to core 0 */
+    int s = pthread_setaffinity_np(pid, sizeof(cpu_set_t), &cpuset);
+    if (s != 0)
+    {
+    	print_error_then_terminate(s, "pthread_setaffinity_np");
+    }
+	////////// CORES ////////////////
+
+
 	/* Variables for time bench */
 	clock_t start, end;
 	double cpu_time_used_1, cpu_time_used_2;
@@ -59,15 +77,20 @@ int main()
 	int num_arr_size = 0u;
 	int block_size = 0u;
 	int thrd_arr_size = 0u;
-	thrd_arr_t thrd_final; /* For final search */
 	void* result; /* Threads return values */
+	int max_simple = 0u; /* Final max element */
+
+
+	/* Initialize thread creation attributes */
+	pthread_attr_t attr;
+	const int attr_init_result = pthread_attr_init(&attr);
+	if (attr_init_result != 0)
+	{
+		print_error_then_terminate(attr_init_result, "pthread_attr_init");
+	}
 
 	thrd_arr_t* thrd_arr = NULL;
 
-	////////// CORES ////////////////
-	//cpu_set_t cpuset;
-	pthread_attr_t attr;
-	////////// CORES ////////////////
 
 	/* Initialize mutex */
 	m_mtx_init(&mtx, mtx_plain);
@@ -104,24 +127,22 @@ int main()
 	printf("\n");
 
 	/////////  SEARCH WITHOUT THREADS   /////////////
-//	start = clock();
-//
-//	int max_simple = 0u;
-//	for (int i = 0; i < num_arr_size; i++)
-//	{
-//		if (num_arr[i] > max_simple)
-//		{
-//			max_simple = num_arr[i];
-//		}
-//	}
-//
-//	printf("\nMax element: %d ", max_simple);
-//
-//	end = clock();
-//	cpu_time_used_1 = ((double)(end - start)) / CLOCKS_PER_SEC;
-//
-//	printf("\nSearch without threads: %fsec", cpu_time_used_1);
-    ////////////////////////////////////////////////
+	start = clock();
+
+	for (int i = 0; i < num_arr_size; i++)
+	{
+		if (num_arr[i] > max_simple)
+		{
+			max_simple = num_arr[i];
+		}
+	}
+	printf("\nMax element: %d ", max_simple);
+
+	end = clock();
+	cpu_time_used_1 = ((double)(end - start)) / CLOCKS_PER_SEC;
+
+	printf("\nSearch without threads: %fsec", cpu_time_used_1);
+    ///////////  SEARCH WITHOUT THREADS END //////////////////////////
 
 
 	start = clock();
@@ -137,7 +158,6 @@ int main()
 		printf("ERROR: memory allocation was failed\n");
 	}
 
-	int core_cnt = 0;
 	/* Create threads */
 	for (int i = 0u; i < thrd_arr_size; i++)
 	{
@@ -151,40 +171,12 @@ int main()
 			thrd_arr[i].arg.end = num_arr_size - 1u;
 		}
 
-
-		pthread_create(&thrd_arr[i].thrd, &attr, &parallel_max_finding, (void*)&thrd_arr[i].arg);
-
-		////////// CORES ////////////////
-		cpu_set_t cpuset;
-	    CPU_ZERO(&cpuset);
-	    if (core_cnt > 1)
-	    {
-	    	core_cnt = 0;
-	    }
-	    CPU_SET(1, &cpuset);
-	    int s = pthread_setaffinity_np(thrd_arr[i].thrd, sizeof(cpu_set_t), &cpuset);
-	    if (s != 0)
-	    {
-	    	print_error_then_terminate(s, "pthread_setaffinity_np");
-	    }
-
-	    /* Check the actual affinity mask assigned to the thread */
-	    s = pthread_getaffinity_np(thrd_arr[i].thrd, sizeof(cpu_set_t), &cpuset);
-	    if (s != 0) {
-	    	print_error_then_terminate(s, "pthread_getaffinity_np");
-	    }
-
-//	    printf("\n\nSet returned by pthread_getaffinity_np() contained:\n");
-//	    for (int j = 0; j < CPU_SETSIZE; j++)
-//	    {
-//	        if (CPU_ISSET(j, &cpuset))
-//	        {
-//	            fprintf(stderr,"%d CPU %d\n",core_cnt, j);
-//	        }
-//	    }
-
-	    core_cnt++;
-	    ////////// CORES ////////////////
+		thrd_arr[i].arg.core_id = i;
+		int create_result = pthread_create(&thrd_arr[i].thrd, &attr, &parallel_max_finding, (void*)&thrd_arr[i].arg);
+		if (create_result != 0)
+		{
+			print_error_then_terminate(create_result, "pthread_create");
+		}
 	}
 
 	/* Block main till all threads are finished */
@@ -201,13 +193,15 @@ int main()
 //	}
 
 	/* Find maximum element */
-	thrd_final.arg.begin = 0u;
-	thrd_final.arg.end = thrd_arr_size - 1u;
-	pthread_create(&thrd_final.thrd, &attr, &parallel_max_finding, (void*)&thrd_final.arg);
-
-	/* Block main till thread is finished */
-	pthread_join(thrd_final.thrd, &result);
-	printf("\nMax element: %d ", *(int *)result);
+	max_simple = 0;
+	for (int i = 0; i < thrd_arr_size; i++)
+	{
+		if (num_arr[i] > max_simple)
+		{
+			max_simple = num_arr[i];
+		}
+	}
+	printf("\nMax element: %d ", max_simple);
 
 	mtx_destroy(&mtx);
 
@@ -222,6 +216,37 @@ int main()
 void* parallel_max_finding(void *arg)
 {
 	thrd_arg_t *thrd_arg = (thrd_arg_t*)arg;
+
+	////////// CORES ////////////////
+	const pthread_t pid = pthread_self();
+	cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    int core_cnt = thrd_arg->core_id%2;
+    CPU_SET(core_cnt, &cpuset);
+    int s = pthread_setaffinity_np(pid, sizeof(cpu_set_t), &cpuset);
+    if (s != 0)
+    {
+    	print_error_then_terminate(s, "pthread_setaffinity_np");
+    }
+
+    /* Check the actual affinity mask assigned to the thread */
+    s = pthread_getaffinity_np(pid, sizeof(cpu_set_t), &cpuset);
+    if (s != 0) {
+    	print_error_then_terminate(s, "pthread_getaffinity_np");
+    }
+
+//	    printf("\n\nSet returned by pthread_getaffinity_np() contained:\n");
+//	    for (int j = 0; j < CPU_SETSIZE; j++)
+//	    {
+//	        if (CPU_ISSET(j, &cpuset))
+//	        {
+//	            fprintf(stderr,"%d CPU %d\n",core_cnt, j);
+//	        }
+//	    }
+
+    ////////// CORES ////////////////
+
+
 	int* max = (int *)malloc(sizeof(int));
 	*max = 0;
 
@@ -241,7 +266,7 @@ void* parallel_max_finding(void *arg)
 
 
 
-
+/* for c11 threads.h (most of them are not used currently) */
 void m_mtx_init(mtx_t *__mutex, int __type)
 {
 	if (mtx_init(__mutex, __type) != thrd_success)
